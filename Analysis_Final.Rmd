@@ -1,0 +1,698 @@
+---
+title: "Statistcal analysis through R"
+output: html_document
+---
+
+## SETUP
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+# install.packages("ggplot2")
+# install.packages("qqplotr")
+# install.packages("car")
+# install.packages("sm")
+# install.packages("magrittr")
+# install.packages("dplyr")
+# install.packages("tidyr")
+# install.packages("pwr")
+# install.packages("lsr")
+# install.packages("lme4")
+# install.packages("MuMIn")
+# install.packages("GGally")
+# install.packages("gridExtra")
+# install.packages("lmerTest")
+# install.packages("xtable")
+# install.packages("Hmisc")
+# install.packages("irr")
+# install.packages("gtools")
+```
+
+```{r, include=FALSE}
+library(ggplot2)
+library(qqplotr)
+library(car)
+library(sm)
+library(magrittr)
+library(dplyr)
+library(pwr)
+library(plyr)
+library(lme4)
+library(lsr)
+library(knitr)
+library(MuMIn)
+library(GGally)
+library(reshape2)
+library(compiler)
+library(parallel)
+library(boot)
+library(lattice)
+library(gridExtra)
+library(lmerTest)
+library(xtable)
+library(Hmisc)
+library(nlme)
+library(tidyr)
+library(irr)
+library(gtools)
+library(RColorBrewer)
+```
+
+
+```{r}
+
+citation(package = "GGally", lib.loc = NULL)
+
+```
+
+```{r}
+# Files subsets
+# setwd("C:/Users/woute/Documents/Orikami/diapro-analysis/QueryAnalyze(wmt)/Intermediate_results/")
+# setwd("C:/Users/Wouter/OneDrive/Documents/Orikami/laptop/R/")
+
+# (1) Subsets 
+hc_ss <- read.csv(file="../Intermediate_results/Pooled_subsets/all_HC_activity.csv")
+ms_ss <- read.csv(file="../Intermediate_results/Pooled_subsets/all_MS_activity.csv")
+
+# (2) Compare groups
+hc_min5_all <- read.csv(file="../Intermediate_results/Pooled_subsets/HC_min5.csv")
+ms_min5_all <- read.csv(file="../Intermediate_results/Pooled_subsets/MS_min5.csv")
+
+# (3) Modelling
+data <- read.csv(file="../Intermediate_results/Pooled_subsets/MS_min5_binary.csv")
+EDSS <- read.csv(file="../Intermediate_results/Pooled_subsets/EDSS_data.csv")
+
+# merge dataframes with EDSS sores (sepperate due to confidentiality issues)
+EDSS["edss"] <- EDSS$total_score
+data <- merge(data, EDSS[c("edss", "code")])
+ms_ss_edss <- merge(ms_ss, EDSS[c("edss", "code")])
+
+```
+
+```{r user data}
+# General variable statisitcs meand and range
+ms_user_info <- unique(ms_ss_edss[, c("length", "weight", "tug", "edss", "code")])
+hc_user_info <- unique(hc_ss[, c("length", "weight", "tug", "code")])
+
+mean(na.omit(hc_user_info$length))
+range(na.omit(hc_user_info$length))
+
+```
+
+## (1) Compare subsets (Validating our data collection condition of minimal # measurements)
+```{r}
+# Pre-pooling groups
+ms_ss['MS'] <- TRUE
+hc_ss['MS'] <- FALSE
+
+ss_all <- rbind(ms_ss, hc_ss)
+
+user_remove <- c()
+# Removing users with too few measurements for P-value t-tests (requires at least 11 measurments)
+for (i in unique(ss_all$code))
+  if (nrow(ss_all[ss_all$code == i, ]) < 11)
+    user_remove <- c(user_remove, i)
+
+# Remove (A15 is too short for shapiro)
+ss_all_min <- ss_all[!ss_all$code %in% user_remove,]
+
+# Testing for normality assumption for all users for STEPS, removing those that are non normal
+for (i in unique(ss_all_min$code))
+  if (shapiro.test(ss_all[ss_all$code == i, ]$steps)$p.value < 0.05)
+    user_remove <- c(user_remove, i)
+
+# Frame to bind to
+threshold_pvals = data.frame()
+
+# BOOTSTRAP: For each bootstrap cycle j, pass through all users i
+# and create a row for P-values of ttests between subet measurements (2-11) and all measurements (upto 28)
+num_straps <- 100
+for (j in 1:num_straps)
+  for (i in unique(ss_all[!ss_all$code %in% user_remove,]$code))
+      threshold_pvals <-  
+              rbind(threshold_pvals,
+              cbind(code=i,
+                    strap=j,      
+                    tot_len=nrow(ss_all[ss_all$code == i,]),
+                    two=t.test(ss_all[ss_all$code == i,][sample(1:nrow(ss_all[ss_all$code == i,]), 2), c("steps")], ss_all[ss_all$code == i,][1:28, c("steps")])$p.value,
+                    three=t.test(ss_all[ss_all$code == i,][sample(1:nrow(ss_all[ss_all$code == i,]), 3), c("steps")], ss_all[ss_all$code == i,][1:28, c("steps")])$p.value,
+                    four=t.test(ss_all[ss_all$code == i,][sample(1:nrow(ss_all[ss_all$code == i,]), 4), c("steps")], ss_all[ss_all$code == i,][1:28, c("steps")])$p.value,
+                    five=t.test(ss_all[ss_all$code == i,][sample(1:nrow(ss_all[ss_all$code == i,]), 5), c("steps")], ss_all[ss_all$code == i,][1:28, c("steps")])$p.value,
+                    six=t.test(ss_all[ss_all$code == i,][sample(1:nrow(ss_all[ss_all$code == i,]), 6), c("steps")], ss_all[ss_all$code == i,][1:28, c("steps")])$p.value,
+                    seven=t.test(ss_all[ss_all$code == i,][sample(1:nrow(ss_all[ss_all$code == i,]), 7), c("steps")], ss_all[ss_all$code == i,][1:28, c("steps")])$p.value,
+                    eight=t.test(ss_all[ss_all$code == i,][sample(1:nrow(ss_all[ss_all$code == i,]), 8), c("steps")], ss_all[ss_all$code == i,][1:28, c("steps")])$p.value,
+                    nine=t.test(ss_all[ss_all$code == i,][sample(1:nrow(ss_all[ss_all$code == i,]), 9), c("steps")], ss_all[ss_all$code == i,][1:28, c("steps")])$p.value,
+                    ten=t.test(ss_all[ss_all$code == i,][sample(1:nrow(ss_all[ss_all$code == i,]), 10), c("steps")], ss_all[ss_all$code == i,][1:28, c("steps")])$p.value,
+                    eleven=t.test(ss_all[ss_all$code == i,][sample(1:nrow(ss_all[ss_all$code == i,]), 11), c("steps")], ss_all[ss_all$code == i,][1:28, c("steps")])$p.value
+                    ))
+
+```
+
+```{r Ttest Plotting}
+num_users <- length(unique(ss_all[!ss_all$code %in% user_remove,]$code))
+sig_thres <- 0.05
+
+# Converting to numeric
+cols <- c(4:13)
+threshold_pvals[,cols] = apply(threshold_pvals[,cols], 2, function(x) as.numeric(as.character(x)));
+
+count <- data.frame()
+# Count num occurrence significance for each run
+for (j in 1:num_straps)
+  count <- rbind(count, colSums(threshold_pvals[threshold_pvals$strap == j,][cols] > sig_thres))
+
+# Reshape and set levels in right order for plotting
+colnames(count) <- c("two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven")
+v.count <- as.data.frame(t(count[,-11]))
+m.count <- melt(v.count)
+m.count["num_meas"] <- factor(as.character(rownames(v.count)), levels=c("two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven"))
+rownames(m.count) <- c()
+
+
+# Plot all runs
+ggplot(m.count, aes(num_meas, value, group=variable)) + 
+  geom_line() +
+  geom_point(shape=23, size=1.8, fill="white") +
+  geom_hline(yintercept=num_users, size=.8, color='dark green') +
+  expand_limits(y=10:25) +
+  labs(title="Users with non-significant difference in subset of steps versus total steps (n=20)", x="Number of measurements included", y="Number of non-significant users") +
+  theme_light() +
+  theme(panel.grid.major = element_blank(), legend.position="none")
+
+
+# Get means and standard deviations for each "subset size" for all bootstrap runs
+av.count <- ddply(m.count, c("num_meas"), summarise, mean = mean(value), sd = sd(value))
+
+# plot average and sd's of all runs
+ggplot(av.count, aes(num_meas, mean, group=1)) + 
+  geom_line() +
+  geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd), width = .15) + 
+  geom_point(shape=23, size=1.8, fill="white") +
+  geom_hline(yintercept=num_users, size=.8, color='dark green') +
+  expand_limits(y=10:22) +
+  labs(title="Normally distributed users (n=20) with non-significant difference (y-axis) \nin random subset of steps (x-axis) versus total steps up to 28", 
+       x="Number of measurements included", y="Number of non-significant users") +
+  theme_light() +
+  theme(panel.grid.major = element_blank(), legend.position="none")
+```
+
+
+```{r Subset Plotting}
+# Removing users that dont at least have 9 measuremnts
+accepted_codes <- c()
+for (i in unique(ss_all$code))
+  if (nrow(ss_all[ss_all$code == i,]) > 9)
+    accepted_codes <- c(accepted_codes, i)
+
+# Plot a few subsets in boxplot
+ss3 <- data.frame()
+ss5 <- data.frame()
+ss7 <- data.frame()
+ss9 <- data.frame()
+sstot <- data.frame()
+
+# Rbind gathering first x number of measurements for all users for group labels
+for (i in accepted_codes)
+  ss3 <- rbind(ss3, ss_all[ss_all$code == i,][1:3, c("steps", "code")])
+for (i in accepted_codes)
+  ss5 <- rbind(ss5, ss_all[ss_all$code == i,][1:5, c("steps", "code")])
+for (i in accepted_codes)
+  ss7 <- rbind(ss7, ss_all[ss_all$code == i,][1:7, c("steps", "code")])
+for (i in accepted_codes)
+  ss9 <- rbind(ss9, ss_all[ss_all$code == i,][1:9, c("steps", "code")])
+for (i in accepted_codes)
+  sstot <- rbind(sstot, ss_all[ss_all$code == i,][, c("steps", "code")])
+
+# labeling each group
+ss3["ss"] <- "3" 
+ss5["ss"] <- "5" 
+ss7["ss"] <- "7" 
+ss9["ss"] <- "9" 
+sstot["ss"] <- "all"
+
+# Grouping
+subset_combo <- rbind(ss3, ss5, ss7, ss9, sstot)
+
+# Plotting
+ggplot(subset_combo, aes(x=code, y=steps, color=ss)) +
+  geom_boxplot() + 
+  labs(title="Box plot for steps per user over different numbers of measurements 3, 5, 7, 9 and all", x="Users", y="Steps", color = "Number of measurements") + 
+  theme_light() +
+  theme(legend.position = c(.07, .86))
+  
+```
+
+
+```{r}
+# First alt approach: ANOVA
+# Removing non normal users
+ss_combo_norm_users <- subset_combo[!subset_combo$code %in% user_remove,]
+anv <- lme(steps ~ ss, random= ~1|code, data=ss_combo_norm_users)
+summary(anv)
+
+# for (i in unique(ss_combo_norm_users$code))
+#   print(summary(gls(steps ~ ss, data=ss_combo_norm_users[ss_combo_norm_users$code == i,])))
+
+# Second alt approach: Pearson Correlation
+# Frames to bind to
+mean_vals = data.frame()
+pears <- data.frame()
+
+# for each user i, means of j number of measurements
+for (i in unique(ss_all$code))
+  for (j in 2:28)
+    mean_vals <-  rbind(mean_vals, 
+                  cbind(code=i, 
+                        length=j,
+                        round(mean(na.omit(ss_all[ss_all$code == i,][1:j, c("steps")])), digits=2)))
+
+# For each number of days k, calculate correlation through pearson
+for (k in 2:27)
+  pears <- rbind(pears,
+           cbind(n = k,
+                 r.sq = cor(x = as.numeric(as.character(mean_vals[mean_vals$length == k,]$V3)), 
+                            y = as.numeric(as.character(mean_vals[mean_vals$length == 28,]$V3)),
+                            use="complete.obs", method="pearson")))
+
+# Plotting pearson values
+ggplot(pears, aes(x=n, y=r.sq)) + 
+  geom_line(size=1.2) + 
+  geom_point(size=1.4) + 
+  labs(title="Pearson correlation between number of measurements to total", x="Number of days", y="Pearson correlation measure") +
+  theme(panel.grid.major=element_blank()) +
+  scale_x_continuous(breaks=c(1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30)) +
+  theme_light() +
+  theme(panel.grid = element_blank())
+
+
+```
+
+## (2) Compare MS vs non-MS users
+### Rename data to be used
+```{r}
+ms <- ms_min5_all
+hc <- hc_min5_all
+
+# Pre_pooling group boolean
+ms['MS'] <- TRUE
+hc['MS'] <- FALSE
+
+# Pooled DF
+pooled <- rbind(ms, hc)
+
+```
+
+### Ttest between groups
+```{r}
+ms_mean_data <- aggregate(list(steps=ms$steps, elevation=ms$elevation, activityCalories=ms$activityCalories, caloriesOut=ms$caloriesOut, lightlyActiveMinutes=ms$lightlyActiveMinutes, fairlyActiveMinutes=ms$fairlyActiveMinutes, veryActiveMinutes=ms$veryActiveMinutes, restingHeartRate=ms$restingHeartRate, sedentaryMinutes=ms$sedentaryMinutes, minWorn=ms$minWorn), list(ms$id), mean)
+
+hc_mean_data <- aggregate(list(steps=hc$steps, elevation=hc$elevation, activityCalories=hc$activityCalories, caloriesOut=hc$caloriesOut, lightlyActiveMinutes=hc$lightlyActiveMinutes, fairlyActiveMinutes=hc$fairlyActiveMinutes, veryActiveMinutes=hc$veryActiveMinutes, restingHeartRate=hc$restingHeartRate, sedentaryMinutes=hc$sedentaryMinutes, minWorn=hc$minWorn), list(hc$id), mean)
+
+# Testing power
+pwr.t.test(n=20, d=cohensD(ms_mean_data$steps, hc_mean_data$steps), sig.level=0.05)
+
+ # T test of user means
+wilcox.test(ms_mean_data$steps, hc_mean_data$steps)$p.value
+wilcox.test(ms_mean_data$elevation, hc_mean_data$elevation)$p.value
+wilcox.test(ms_mean_data$activityCalories, hc_mean_data$activityCalories)$p.value
+wilcox.test(ms_mean_data$caloriesOut, hc_mean_data$caloriesOut)$p.value
+wilcox.test(ms_mean_data$restingHeartRate, hc_mean_data$restingHeartRate)$p.value
+wilcox.test(ms_mean_data$minWorn, hc_mean_data$minWorn)$p.value
+
+wilcox.test(ms_mean_data$veryActiveMinutes, hc_mean_data$veryActiveMinutes)$p.value
+wilcox.test(ms_mean_data$fairlyActiveMinutes, hc_mean_data$fairlyActiveMinutes)$p.value
+wilcox.test(ms_mean_data$lightlyActiveMinutes, hc_mean_data$lightlyActiveMinutes)$p.value
+wilcox.test(ms_mean_data$sedentaryMinutes, hc_mean_data$sedentaryMinutes)$p.value
+
+# MANOVA and ANOVA
+man <- manova(cbind(steps, elevation, activityCalories, caloriesOut, lightlyActiveMinutes, veryActiveMinutes, restingHeartRate, sedentaryMinutes, minWorn) ~ MS, data = pooled)
+summary(man)
+
+ano <- aov(man)
+summary(ano)
+```
+
+### Density plots relevant variables
+```{r}
+par(mfrow=c(2,3))
+sm.density.compare(pooled$steps, pooled$MS, xlab="Steps")
+legend("topright", levels(pooled$MS), fill=2+(1:nlevels(pooled$MS)), legend=c('MS', 'HC'), lty = c(1, 3), cex = .8)
+
+sm.density.compare(pooled$elevation, pooled$MS, xlab="Elevation (m)")
+legend("topright", levels(pooled$MS), fill=2+(1:nlevels(pooled$MS)), legend=c('MS', 'HC'), lty = c(1, 3), cex = .8)
+
+sm.density.compare(pooled$activityCalories, pooled$MS, xlab="Activity calories (kcal)")
+legend("topright", levels(pooled$MS), fill=2+(1:nlevels(pooled$MS)), legend=c('MS', 'HC'), lty = c(1, 3), cex = .8)
+
+sm.density.compare(pooled$fairlyActiveMinutes, pooled$MS, xlab="Fairly active minutes (min)")
+legend("topright", levels(pooled$MS), fill=2+(1:nlevels(pooled$MS)), legend=c('MS', 'HC'), lty = c(1, 3), cex = .8)
+
+sm.density.compare(pooled$veryActiveMinutes, pooled$MS, xlab="Very active minutes (min)")
+legend("topright", levels(pooled$MS), fill=2+(1:nlevels(pooled$MS)), legend=c('MS', 'HC'), lty = c(1, 3), cex = .8)
+
+mtext("Density plot of metrics registered for MS vs. HC users", side=3, line=-1.3, outer=TRUE)
+
+# Correlations with ggpairs for both groups
+ggpairs(na.omit(pooled), columns= c("steps", "elevation", "activityCalories", "veryActiveMinutes", "fairlyActiveMinutes", "length", "weight", "tug"), progress=FALSE, ggplot2::aes(colour=MS)) + theme_light()
+
+```
+
+### Re-eval of only normally distributed users
+```{r}
+# User remove list taken from first (1) analysis
+ms_norm <- ms[!ms$code %in% user_remove,]
+hc_norm <- hc[!hc$code %in% user_remove,]
+
+# Mean data
+ms_mean_data <- aggregate(list(steps=ms_norm$steps, elevation=ms_norm$elevation, activityCalories=ms_norm$activityCalories), list(ms_norm$id), mean)
+hc_mean_data <- aggregate(list(steps=hc_norm$steps, elevation=hc_norm$elevation, activityCalories=hc_norm$activityCalories), list(hc_norm$id), mean)
+
+ms_mean_data
+hc_mean_data
+
+# T test of user means
+t.test(ms_mean_data$steps, hc_mean_data$steps)$p.value
+t.test(ms_mean_data$elevation, hc_mean_data$elevation)$p.value
+t.test(ms_mean_data$activityCalories, hc_mean_data$activityCalories)$p.value
+
+
+```
+
+
+## (3) Compare Questionscores for MS patients
+
+### Explore ms data
+Choose dataset, check for correct entry of factors, relabel and reassign as needed
+```{r}
+# Rename col
+data["elevation (m)"] <- data[5]
+
+# Relabel reassign factors
+data$questionScoreBinary <- factor(data$questionScoreBinary, levels = c(0, 1), labels = c("Good day", "Bad day"))
+data$stepsBinary <- factor(data$stepsBinary, levels = c(0, 1), labels = c("below average steps", "above average steps"))
+data$Response <- factor(data$freq_response, levels = c(0, 1, 2, 3), labels = c("low activity & good day", "low activity & bad day", "high activity & good day", "high activity & bad day"))
+```
+
+Its interesting to note that the response, which was split into groups based on the mean of the questionScore and the steps for each user individually, has way fewer responses (2/3) for the high activity & bad day combination.
+```{r, include=FALSE}
+summary(data)
+str(data)
+
+# Some functions for plotting
+# FUN: count num obsv. per box
+# Source function: https://stackoverflow.com/questions/28846348/add-number-of-observations-per-group-in-ggplot2-boxplot
+get.n <- function(x){
+  return(c(y = median(x)*0.97, label = length(x)))
+}
+
+# FUN: get corr
+# Source https://stackoverflow.com/questions/31337922/adding-italicised-r-with-correlation-coefficient-to-a-scatter-plot-chart-in-ggpl
+get.corr <- function(x, y){
+  return(round(cor(x, y, use = "complete.obs"), digits=2))
+}
+
+# Custom color palettes
+sixhexROY <- c("#f41242", "#f45941", "#f49041", "#f4ac41", "#f4bc41", "#f4ce41")
+sixhexGB <- c("#168c1c", "#14d15d", "#14d1a8", "#14aed1", "#1462d1", "#0e10af", "#713bdd", "#b43bdd")
+```
+
+### PLOTS
+#### Plotting data coverage over time
+```{r}
+# User measurement coverage over dates
+ggplot(pooled, aes(timestamp, code, color=code), xlab="Date", ylab="UserId") + 
+  geom_point(show.legend = FALSE) + 
+  labs(title="Data coverage per user over time", x="Date - 2017-06-01 to 2018-03-05", y="Users") + 
+  theme(axis.text.x=element_blank(), panel.grid.major=element_blank(), panel.background=element_blank())
+
+# num measurements participants
+c <- count(pooled, code)
+?count()
+ggplot(c, aes(code, n)) + 
+  geom_point() +
+  labs(title = "Number of measurements avaiable for participants in the study", x="Users", y="Number of measurements") +
+  theme(panel.grid.major = element_blank()) + 
+  theme_light()
+```
+
+#### compare densities binary questionscore
+```{r}
+par(mfrow=c(1,3))
+sm.density.compare(data$steps, data$questionScoreBinary, xlab="Steps")
+legend("topright", levels(data$questionScoreBinary), fill=1+(1:nlevels(data$questionScoreBinary)), legend=c('Below av. MS effect', 'Above av. MS effect'))
+
+sm.density.compare(data$elevation, data$questionScoreBinary, xlab="Elevation (m)")
+legend("topright", levels(data$questionScoreBinary), fill=1+(1:nlevels(data$questionScoreBinary)), legend=c('Below av. MS effect', 'Above av. MS effect'))
+
+sm.density.compare(data$activityCalories, data$questionScoreBinary, xlab="Activity calories")
+legend("topright", levels(data$questionScoreBinary), fill=1+(1:nlevels(data$questionScoreBinary)), legend=c('Below av. MS effect', 'Above av. MS effect'))
+
+mtext("Density plot of metrics registered for Above average vs. Below average days", side=3, line=-1.3, outer=TRUE)
+```
+
+#### Evaluating the data in general
+Its clear that there is a distinction between activity variables over the various users, which is visible in the violinplot
+When evaluating the correlations between steps, elevation and activityCalories we do see that they're highly intercorrelated, however, this is pretty much as expected considering their nature. For the comparison between the variables given good vs bad days, we can visually distinguish the averages, this could signify a significant difference between the two.
+```{r}
+# Violin plot for distribution of steps
+# Source: http://www.sthda.com/english/wiki/ggplot2-violin-plot-quick-start-guide-r-software-and-data-visualization
+g <- ggplot(data, aes(x=code, y=steps)) 
+g + geom_violin(bw=800) + labs(title="Violin plot for steps per user", x="Users", y="Steps") + geom_jitter(shape=16, position=position_jitter(0.02), size=.8) +
+  theme(panel.grid.major = element_blank()) + 
+  theme_light()
+
+# Correlation plot between continuous variables 
+# Source: https://stats.idre.ucla.edu/r/dae/mixed-effects-logistic-regression/
+ggpairs(na.omit(data)[, c("steps", "elevation", "activityCalories", "veryActiveMinutes", "fairlyActiveMinutes", "length", "weight", "edss", "tug")], progress=FALSE)
+ggcorr(data[, c("steps", "elevation", "activityCalories", "veryActiveMinutes", "fairlyActiveMinutes", "length", "weight", "edss", "tug")], nbreaks=5, hjust = 0.85, label=TRUE, layout.exp = 1, geom="tile", label_alpha = 1, palette = "RdBu")
+
+```
+
+#### Plotting binary questionscore - GOOD DAY / BAD DAY condition
+```{r}
+# Plotting for questionscores
+# Means of data
+av_day_users <- aggregate(data$steps, list(data$code, data$questionScoreBinary), mean)
+av_day_users_spread <- spread(av_day_users, Group.2, x)
+
+# Plot condition on axes
+plot(av_day_users_spread$`Good day`, av_day_users_spread$`Bad day`, xlab = "good day: QS below average", ylab="bad day: QS above average", main="Questionscores mean-split, average steps per condition" )
+
+# Plotting average steps for good vs bad days
+q_response <- qplot(Group.2, x, data=av_day_users, color=Group.1,
+  main="Average steps per user for binary questionscore condition", xlab="Binary question score", ylab="Steps")
+
+q_response + geom_line(aes(group=Group.1)) +
+  theme(panel.grid.major = element_blank()) + 
+  theme_light()
+
+# Boxplots for effectors of binary factor
+g2 <- ggplot(data, aes(questionScoreBinary, steps)) + geom_boxplot() + theme(panel.grid.major = element_blank()) + theme_light()
+g3 <- ggplot(data, aes(questionScoreBinary, elevation)) + geom_boxplot() + theme(panel.grid.major = element_blank()) + theme_light()
+g4 <- ggplot(data, aes(questionScoreBinary, activityCalories)) + geom_boxplot() + theme(panel.grid.major = element_blank()) + theme_light()
+g5 <- ggplot(data, aes(questionScoreBinary, veryActiveMinutes)) + geom_boxplot() + theme(panel.grid.major = element_blank()) + theme_light()
+g6 <- ggplot(data, aes(questionScoreBinary, fairlyActiveMinutes)) + geom_boxplot() + theme(panel.grid.major = element_blank()) + theme_light()
+
+grid.arrange(g2, g3, g4, g5, g6, nrow = 3, 
+             top = "Continuous variable distributions for question score")
+
+```
+
+#### Plotting continuous questionscores
+```{r}
+data['qs_whole'] <- round(data$questionScore, digits = 0)
+
+# data$qs_whole
+av_qsround_users <- aggregate(list(steps=data$steps), list(code=data$code, qsround=data$qs_whole), mean)
+av_qs_users <- aggregate(list(steps=data$steps), list(code=data$code, qs=data$questionScore), mean)
+
+av_qs_users_spread <- spread(av_qs_users, code, steps)
+# av_qs_users_spread
+
+
+
+# Plotting average steps vs average questionscore
+av_steps_qs <- aggregate(list(data$steps, data$questionScore), list(data$code), mean)
+names(av_steps_qs) <- c("code", "av.steps", "av.qs")
+
+ggplot(av_steps_qs, aes(x=av.qs, y=av.steps, color=code)) +
+  geom_point()+
+  theme(panel.grid.major = element_blank()) +
+  theme_light()
+
+
+
+# Non average: all data points
+grp <- cut_width(na.omit(data$tug), 5)
+
+ggplot(data, aes(y=steps, x=questionScore)) + 
+  geom_point() + 
+  labs(title="Scatterplot of continuous question scores versus steps taken for MS users", x="Question Scores", y="Steps", color="code") +
+  geom_smooth(method = "lm", fill = NA, size=.2) +
+  geom_text(x = 9, y = 20000, label = paste("corr : ", get.corr(av_qs_users$qs, av_qs_users$steps)), parse = TRUE) +
+  theme(panel.grid.major = element_blank()) + 
+  theme_light()
+
+# Plotting average questionscores density
+sm.density.compare(data$questionScore, data$code, xlab="Question scores")
+mtext("Densiity distriubutions of questionscores given by MS users", side=3, line=-1.3, outer=TRUE)
+
+```
+
+#### Plotting EDSS
+```{r}
+# Plotting for EDSS
+av_steps <- aggregate(data$steps, list(data$code), mean)
+names(av_steps) <- c("code", "average_steps")
+
+edss <- EDSS[, c('code', 'total_score')]
+names(edss) <- c("code", "edss")
+
+av_steps_edss <- merge(av_steps, edss)
+
+# Plotting average steps per EDSS score
+grp_edss <- cut_width(na.omit(av_steps_edss$edss), .5)
+
+ggplot(na.omit(av_steps_edss), aes(group=grp_edss, x=grp_edss, y=average_steps, color=grp_edss)) + 
+  geom_boxplot(width=.4) + 
+  scale_colour_manual(values = sixhexGB) +
+  labs(title="Average steps for EDSS scores MS patients", x="EDSS total score (binned per 0.5 edss point)", y="Average steps") + 
+  theme(legend.position="none") + 
+  stat_summary(fun.data = get.n, geom='text', fun.y = median) +
+  theme(panel.grid.major = element_blank()) + 
+  theme_light()
+
+# Scatter with correlation
+ggplot(na.omit(av_steps_edss), aes(x=edss, y=average_steps)) + 
+  geom_point() + 
+  geom_smooth(method = 'lm', color="black", fill="lightgrey") +
+  labs(title="Average steps for EDSS scores MS patients", x="EDSS score (s) ", y="Average steps") +
+  geom_text(x = 2.2, y = 4500, label = paste("corr : ", get.corr(av_steps_edss$edss, av_steps_edss$average_steps)), parse = TRUE)+
+  theme(panel.grid.major = element_blank()) + 
+  theme_light()
+  
+
+```
+
+#### Plotting TUG
+```{r}
+av_steps <- aggregate(data$steps, list(data$code), mean)
+names(av_steps) <- c("code", "average_steps")
+
+tug_scores <- distinct(data[c("code", "tug")])
+tug_scores <- tug_scores[tug_scores$tug < 30,] # TUG removing extreme outlier
+av_steps_tug <- merge(av_steps, tug_scores)
+
+# Plotting average steps per TUG score
+grp_tug <- cut_width(na.omit(av_steps_tug$tug), 2)
+
+ggplot(na.omit(av_steps_tug), aes(group=grp_tug, x=grp_tug, y=average_steps, color=grp_tug)) + 
+  geom_boxplot(width=.4) + 
+  scale_colour_manual(values = sixhexGB) +
+  theme(legend.position="none") + 
+  labs(title="Average steps for TUG scores MS patients", x="TUG score (s) (bin per 2 sec) ", y="Average steps") +
+  stat_summary(fun.data = get.n, geom='text', fun.y = mean, position = position_dodge(width = 0.75))+
+  theme(panel.grid.major = element_blank()) + 
+  theme_light()
+
+# Scatter with correlation
+ggplot(na.omit(av_steps_tug), aes(x=tug, y=average_steps)) + 
+  geom_point() +
+  geom_smooth(method = 'lm', color="black", fill="lightgrey") +
+  labs(title="Average steps for TUG scores MS patients", x="TUG score (s) ", y="Average steps") +
+  geom_text(x = 4, y = 4500, label = paste("corr : ", get.corr(av_steps_tug$tug, av_steps_tug$average_steps)), parse = TRUE)+
+  theme(panel.grid.major = element_blank()) + 
+  theme_light()
+
+```
+
+#### Plotting TUG vs EDSS
+```{r}
+# Testing for correlation between TUG and EDSS scores for users
+user_mobility <- na.omit(merge(tug_scores, edss))
+
+# Scatter with correlation
+ggplot(user_mobility, aes(x=tug, y=edss)) + 
+  geom_point(aes(color=user_mobility$code)) + 
+  geom_smooth(method = 'lm', color="black", fill="lightgrey") +
+  labs(title="EDSS and TUG scores MS patients", x="TUG score (s) ", y="EDSS total score") +
+  geom_text(x = 4, y = 1, label = paste("bold(r) : ", get.corr(user_mobility$tug, user_mobility$edss)), parse = TRUE)+
+  theme(panel.grid.major = element_blank()) + 
+  theme_light()
+
+```
+
+### Models
+```{r}
+# First we recale and center due to the magnitude of the steps variable - seems to have a large effect on the models
+# Source: https://rstudio-pubs-static.s3.amazonaws.com/33653_57fc7b8e5d484c909b615d8633c01d51.html
+
+scaled_data <- data
+scaled_data[, c("steps", "elevation", "activityCalories", "length", "weight", "veryActiveMinutes")] <- scale(data[, c("steps", "elevation", "activityCalories", "length", "weight", "veryActiveMinutes")])
+
+# Mixed effects logistic regression binomial
+# Source: https://stats.idre.ucla.edu/r/dae/mixed-effects-logistic-regression/ & https://nlp.stanford.edu/manning/courses/ling289/GLMM.pdf
+
+# Plotting random starts for intercept and slope
+# Source: https://stats.idre.ucla.edu/r/dae/mixed-effects-logistic-regression/
+
+# Mixed model for non binary questionscores
+# source: https://web.stanford.edu/class/psych252/section/Mixed_models_tutorial.html#reml-vs.ml
+lmm_full <- lmer(questionScore ~ steps + elevation + activityCalories + weight + length + gender + (1 | id), data=scaled_data, REML=TRUE)
+lmm_3 <- lmer(questionScore ~ steps + elevation + activityCalories + (1 + steps | id), data=scaled_data, REML=TRUE)
+lmm_2 <- lmer(questionScore ~ steps + activityCalories + (1 + steps + activityCalories | id), data=scaled_data, REML=TRUE)
+
+# Lower level models
+lmm_steps <- lmer(questionScore ~ steps + (1 | id), data=scaled_data, REML=TRUE)
+summary(lmm_steps)
+
+lmm_cals <- lmer(questionScore ~ activityCalories + (1 | id), data=scaled_data, REML=TRUE)
+summary(lmm_cals)
+
+lmm_cals_slope <- lmer(questionScore ~ activityCalories + (1 + activityCalories | id), data=scaled_data, REML=TRUE)
+# summary(lmm_cals_slope)
+
+r.squaredGLMM(lmm_full)
+r.squaredGLMM(lmm_3)    
+r.squaredGLMM(lmm_2)    # singular fit: covar is lin-ombo of another
+r.squaredGLMM(lmm_steps)
+r.squaredGLMM(lmm_cals)
+r.squaredGLMM(lmm_cals_slope)
+
+AIC(lmm_full, lmm_3, lmm_2, lmm_steps, lmm_cals, lmm_cals_slope)
+
+plot(lmm_2, resid(., saled=TRUE) ~ fitted(.) | code, abline=0)
+plot(lmm_2)
+
+
+```
+
+### Variance & Normality
+Checking homoscedacity and normality over a few general models to evaluate data spread.
+It appears that all pooled data is heteroscedactic. (P-vals are < 0.05 so we reject the null hypothesis) and neither steps or questionscore is normally distributed)
+Cooks distances are low so it is unlikely its an issue with high effect outlier measurements.
+
+```{r}
+# M <- lm(steps ~ questionScoreBinary, data=data)
+Mid <- lm(steps ~ questionScore, error= ~1|code, data=scaled_data)
+
+par(mfrow=c(2,2))
+# plot(M)
+plot(Mid)
+
+# ncvTest(M)
+ncvTest(Mid)
+summary(Mid)
+
+qqPlot(M, main="QQ Plot")
+qqPlot(Mid, main="QQ Plot with ID's")
+
+shapiro.test(data$steps)
+shapiro.test(data$activityCalories)
+shapiro.test(data$steps)
+shapiro.test(data$questionScore)
+# shapiro.test(data$questionScoreBinary)
+
+```
+
